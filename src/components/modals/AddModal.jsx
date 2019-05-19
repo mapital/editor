@@ -9,10 +9,10 @@ import LayerIdBlock from '../layers/LayerIdBlock'
 import LayerSourceBlock from '../layers/LayerSourceBlock'
 import LayerSourceLayerBlock from '../layers/LayerSourceLayerBlock'
 
-class AddModal extends React.Component {
+class AddModal extends React.PureComponent {
   static propTypes = {
     layers: PropTypes.array.isRequired,
-    onLayersChange: PropTypes.func.isRequired,
+    onAddLayer: PropTypes.func.isRequired,
     isOpen: PropTypes.bool.isRequired,
     onOpenToggle: PropTypes.func.isRequired,
 
@@ -21,7 +21,6 @@ class AddModal extends React.Component {
   }
 
   addLayer = () => {
-    const changedLayers = this.props.layers.slice(0)
     const layer = {
       id: this.state.id,
       type: this.state.type,
@@ -34,9 +33,7 @@ class AddModal extends React.Component {
       }
     }
 
-    changedLayers.push(layer)
-
-    this.props.onLayersChange(changedLayers)
+    this.props.onAddLayer(layer);
     this.props.onOpenToggle(false)
   }
 

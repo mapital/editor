@@ -2,6 +2,7 @@ import autoBind from 'react-autobind';
 import React from 'react'
 import cloneDeep from 'lodash.clonedeep'
 import clamp from 'lodash.clamp'
+import omit from 'lodash.omit'
 import {arrayMove} from 'react-sortable-hoc'
 import url from 'url'
 
@@ -27,13 +28,13 @@ import { initialStyleUrl, loadStyleUrl, removeStyleQuerystring } from '../libs/u
 import { undoMessages, redoMessages } from '../libs/diffmessage'
 import { StyleStore } from '../libs/stylestore'
 import { ApiStyleStore } from '../libs/apistore'
-import { RevisionStore } from '../libs/revisions'
 import LayerWatcher from '../libs/layerwatcher'
 import tokens from '../config/tokens.json'
 import isEqual from 'lodash.isequal'
 import Debug from '../libs/debug'
 import queryUtil from '../libs/query-util'
 
+import IcepickStyle from 'icepick-style';
 import MapboxGl from 'mapbox-gl'
 
 
@@ -88,7 +89,6 @@ export default class App extends React.Component {
     super(props)
     autoBind(this);
 
-    this.revisionStore = new RevisionStore()
     this.styleStore = new ApiStyleStore({
       onLocalStyleChange: mapStyle => this.onStyleChanged(mapStyle, false)
     })
@@ -158,9 +158,10 @@ export default class App extends React.Component {
       }
     })
 
+    const immutableStyle = new IcepickStyle();
+
     const styleUrl = initialStyleUrl()
     if(styleUrl && window.confirm("Load style from URL: " + styleUrl + " and discard current changes?")) {
-      this.styleStore = new StyleStore()
       loadStyleUrl(styleUrl, mapStyle => this.onStyleChanged(mapStyle))
       removeStyleQuerystring()
     } else {
@@ -176,22 +177,43 @@ export default class App extends React.Component {
 
         if(Debug.enabled()) {
           Debug.set("maputnik", "styleStore", this.styleStore);
-          Debug.set("maputnik", "revisionStore", this.revisionStore);
         }
       })
     }
 
     if(Debug.enabled()) {
-      Debug.set("maputnik", "revisionStore", this.revisionStore);
       Debug.set("maputnik", "styleStore", this.styleStore);
     }
 
     const queryObj = url.parse(window.location.href, true).query;
 
+    immutableStyle.on("change", () => {
+      this.forceUpdate();
+
+			if (immutableStyle.errors.length === 0) {	
+        const prevStyle = immutableStyle.stack(-1).style;
+				if (immutableStyle.current.glyphs !== prevStyle.glyphs) {	
+					this.updateFonts(immutableStyle.current.glyphs);
+				}	
+				if (immutableStyle.current.sprite !== prevStyle.sprite) {	
+					this.updateIcons(immutableStyle.current.sprite);
+				}	
+				if (immutableStyle.current.sources !== prevStyle.sources) {	
+          this.fetchSources();
+        }
+			}
+
+			this.setState({	
+				errors: this.state.mapStyle.errors,
+			});
+
+      this.saveStyle(this.state.mapStyle.current);
+    })
+
     this.state = {
       errors: [],
       infos: [],
-      mapStyle: style.emptyStyle,
+      mapStyle: immutableStyle,
       selectedLayerIndex: 0,
       sources: {},
       vectorLayers: {},
@@ -217,7 +239,7 @@ export default class App extends React.Component {
     })
   }
 
-  handleKeyPress(e) {
+  handleKeyPress = (e) => {
     if(navigator.platform.toUpperCase().indexOf('MAC') >= 0) {
       if(e.metaKey && e.shiftKey && e.keyCode === 90) {
         this.onRedo(e);
@@ -265,142 +287,95 @@ export default class App extends React.Component {
   }
 
   onStyleChanged = (newStyle, save=true) => {
-
-    const errors = validate(newStyle, latest)
-    if(errors.length === 0) {
-
-      if(newStyle.glyphs !== this.state.mapStyle.glyphs) {
-        this.updateFonts(newStyle.glyphs)
-      }
-      if(newStyle.sprite !== this.state.mapStyle.sprite) {
-        this.updateIcons(newStyle.sprite)
-      }
-
-      this.revisionStore.addRevision(newStyle)
-      if(save) this.saveStyle(newStyle)
-      this.setState({
-        mapStyle: newStyle,
-        errors: [],
-      })
-    } else {
-      this.setState({
-        errors: errors.map(err => err.message)
-      })
-    }
-
-    this.fetchSources();
+    this.state.mapStyle.replace(newStyle);
   }
 
   onUndo = () => {
-    const activeStyle = this.revisionStore.undo()
-    const messages = undoMessages(this.state.mapStyle, activeStyle)
-    this.saveStyle(activeStyle)
-    this.setState({
-      mapStyle: activeStyle,
-      infos: messages,
-    })
+    if (this.state.mapStyle.canUndo()) {
+      this.state.mapStyle.undo();
+    }
   }
 
   onRedo = () => {
-    const activeStyle = this.revisionStore.redo()
-    const messages = redoMessages(this.state.mapStyle, activeStyle)
-    this.saveStyle(activeStyle)
-    this.setState({
-      mapStyle: activeStyle,
-      infos: messages,
-    })
+    if (this.state.mapStyle.canRedo()) {
+      this.state.mapStyle.redo();
+    }
   }
 
   onMoveLayer = (move) => {
     let { oldIndex, newIndex } = move;
-    let layers = this.state.mapStyle.layers;
-    oldIndex = clamp(oldIndex, 0, layers.length-1);
-    newIndex = clamp(newIndex, 0, layers.length-1);
-    if(oldIndex === newIndex) return;
-
-    if (oldIndex === this.state.selectedLayerIndex) {
-      this.setState({
-        selectedLayerIndex: newIndex
-      });
-    }
-
-    layers = layers.slice(0);
-    layers = arrayMove(layers, oldIndex, newIndex);
-    this.onLayersChange(layers);
+    this.state.mapStyle.moveLayer(oldIndex, newIndex);
   }
 
-  onLayersChange = (changedLayers) => {
-    const changedStyle = {
-      ...this.state.mapStyle,
-      layers: changedLayers
-    }
-    this.onStyleChanged(changedStyle)
+  onAddLayer = (layer) => {
+    this.state.mapStyle.addLayer(layer.id, layer);
   }
 
   onLayerDestroy = (layerId) => {
-    let layers = this.state.mapStyle.layers;
-    const remainingLayers = layers.slice(0);
-    const idx = style.indexOfLayer(remainingLayers, layerId)
-    remainingLayers.splice(idx, 1);
-    this.onLayersChange(remainingLayers);
+    this.state.mapStyle.removeLayer(layerId);
   }
 
   onLayerCopy = (layerId) => {
-    let layers = this.state.mapStyle.layers;
-    const changedLayers = layers.slice(0)
-    const idx = style.indexOfLayer(changedLayers, layerId)
+    const currentLayer = this.state.mapStyle.getLayerById(layerId);
+    let layerIdx = this.state.mapStyle.current.layers.findIndex(layer => layer.id === layerId);
 
-    const clonedLayer = cloneDeep(changedLayers[idx])
-    clonedLayer.id = clonedLayer.id + "-copy"
-    changedLayers.splice(idx, 0, clonedLayer)
-    this.onLayersChange(changedLayers)
+    let newId = currentLayer.id+"-copy";
+    if (this.state.mapStyle.getLayerById(newId)) {
+      let idx = 1;
+      while (this.state.mapStyle.getLayerById(newId+idx)) {
+        idx++;
+      }
+      newId = newId+idx;
+    }
+    this.state.mapStyle.addLayer(newId, currentLayer, layerIdx+1);
   }
 
   onLayerVisibilityToggle = (layerId) => {
-    let layers = this.state.mapStyle.layers;
-    const changedLayers = layers.slice(0)
-    const idx = style.indexOfLayer(changedLayers, layerId)
+    const currentLayer = this.state.mapStyle.getLayerById(layerId);
 
-    const layer = { ...changedLayers[idx] }
-    const changedLayout = 'layout' in layer ? {...layer.layout} : {}
-    changedLayout.visibility = changedLayout.visibility === 'none' ? 'visible' : 'none'
+    let newLayer;
+    if (currentLayer.layout && currentLayer.layout.visibility === 'none') {
+      newLayer = {
+        ...currentLayer,
+        layout: omit(currentLayer.layout, 'visibility'),
+      };
+    }
+    else {
+      newLayer = {
+        ...currentLayer,
+        layout: {
+          ...currentLayer.layout,
+          visibility:  'none'
+        }
+      };
+    }
 
-    layer.layout = changedLayout
-    changedLayers[idx] = layer
-    this.onLayersChange(changedLayers)
+    this.state.mapStyle.modifyLayer(layerId, newLayer);
   }
 
 
   onLayerIdChange = (oldId, newId) => {
-    const changedLayers = this.state.mapStyle.layers.slice(0)
-    const idx = style.indexOfLayer(changedLayers, oldId)
+    this.state.mapStyle.renameLayer(oldId, newId)
+  }
 
-    changedLayers[idx] = {
-      ...changedLayers[idx],
-      id: newId
-    }
-
-    this.onLayersChange(changedLayers)
+  forceUpdate () {
+    this.setState({
+      idx: (this.state.idx || 0)+1
+    })
   }
 
   onLayerChanged = (layer) => {
-    const changedLayers = this.state.mapStyle.layers.slice(0)
-    const idx = style.indexOfLayer(changedLayers, layer.id)
-    changedLayers[idx] = layer
-
-    this.onLayersChange(changedLayers)
+    this.state.mapStyle.modifyLayer(layer.id, layer)
   }
 
   setMapState = (newState) => {
-    this.setState({
-      mapState: newState
-    })
+    this.state.mapStyle.replace(newState);
   }
 
   fetchSources() {
     const sourceList = {...this.state.sources};
 
-    for(let [key, val] of Object.entries(this.state.mapStyle.sources)) {
+    for(let [key, val] of Object.entries(this.state.mapStyle.current.sources)) {
       if(sourceList.hasOwnProperty(key)) {
         continue;
       }
@@ -419,7 +394,7 @@ export default class App extends React.Component {
         }
 
         try {
-          url = setFetchAccessToken(url, this.state.mapStyle)
+          url = setFetchAccessToken(url, this.state.mapStyle.current)
         } catch(err) {
           console.warn("Failed to setFetchAccessToken: ", err);
         }
@@ -463,7 +438,7 @@ export default class App extends React.Component {
 
   mapRenderer() {
     const mapProps = {
-      mapStyle: style.replaceAccessTokens(this.state.mapStyle, {allowFallback: true}),
+      mapStyle: style.replaceAccessTokens(this.state.mapStyle.current, {allowFallback: true}),
       options: this.state.mapOptions,
       onDataChange: (e) => {
         this.layerWatcher.analyzeMap(e.map)
@@ -471,10 +446,15 @@ export default class App extends React.Component {
       },
     }
 
-    const metadata = this.state.mapStyle.metadata || {}
+    const metadata = this.state.mapStyle.current.metadata || {}
     const renderer = metadata['maputnik:renderer'] || 'mbgljs'
 
     let mapElement;
+
+    let filterName;
+    if(this.state.mapState.match(/^filter-/)) {
+      filterName = this.state.mapState.replace(/^filter-/, "");
+    }
 
     // Check if OL code has been loaded?
     if(renderer === 'ol') {
@@ -484,14 +464,12 @@ export default class App extends React.Component {
     } else {
       mapElement = <MapboxGlMap {...mapProps}
         inspectModeEnabled={this.state.mapState === "inspect"}
-        highlightedLayer={this.state.mapStyle.layers[this.state.selectedLayerIndex]}
-        onLayerSelect={this.onLayerSelect} />
+        highlightedLayer={this.state.mapStyle.current.layers[this.state.selectedLayerIndex]}
+        onLayerSelect={this.onLayerSelect}
+        filter={filterName}
+      />
     }
 
-    let filterName;
-    if(this.state.mapState.match(/^filter-/)) {
-      filterName = this.state.mapState.replace(/^filter-/, "");
-    }
     const elementStyle = {};
     if (filterName) {
       elementStyle.filter = `url('#${filterName}')`;
@@ -503,7 +481,7 @@ export default class App extends React.Component {
   }
 
   onLayerSelect = (layerId) => {
-    const idx = style.indexOfLayer(this.state.mapStyle.layers, layerId)
+    const idx = style.indexOfLayer(this.state.mapStyle.current.layers, layerId)
     this.setState({ selectedLayerIndex: idx })
   }
 
@@ -525,13 +503,12 @@ export default class App extends React.Component {
   }
 
   render() {
-    const layers = this.state.mapStyle.layers || []
-    const selectedLayer = layers.length > 0 ? layers[this.state.selectedLayerIndex] : null
-    const metadata = this.state.mapStyle.metadata || {}
+    const layers = this.state.mapStyle.current.layers || [];
+    const selectedLayer = layers.length > 0 ? layers[this.state.selectedLayerIndex] : null;
 
     const toolbar = <Toolbar
       mapState={this.state.mapState}
-      mapStyle={this.state.mapStyle}
+      mapStyle={this.state.mapStyle.current}
       inspectModeEnabled={this.state.mapState === "inspect"}
       sources={this.state.sources}
       onStyleChanged={this.onStyleChanged}
@@ -545,7 +522,7 @@ export default class App extends React.Component {
       onLayerDestroy={this.onLayerDestroy}
       onLayerCopy={this.onLayerCopy}
       onLayerVisibilityToggle={this.onLayerVisibilityToggle}
-      onLayersChange={this.onLayersChange}
+      onAddLayer={this.onAddLayer}
       onLayerSelect={this.onLayerSelect}
       selectedLayerIndex={this.state.selectedLayerIndex}
       layers={layers}
@@ -556,7 +533,7 @@ export default class App extends React.Component {
       layer={selectedLayer}
       layerIndex={this.state.selectedLayerIndex}
       isFirstLayer={this.state.selectedLayerIndex < 1}
-      isLastLayer={this.state.selectedLayerIndex === this.state.mapStyle.layers.length-1}
+      isLastLayer={this.state.selectedLayerIndex === this.state.mapStyle.current.layers.length-1}
       sources={this.state.sources}
       vectorLayers={this.state.vectorLayers}
       spec={this.state.spec}
@@ -581,13 +558,13 @@ export default class App extends React.Component {
         onOpenToggle={this.toggleModal.bind(this, 'shortcuts')}
       />
       <SettingsModal
-        mapStyle={this.state.mapStyle}
+        mapStyle={this.state.mapStyle.current}
         onStyleChanged={this.onStyleChanged}
         isOpen={this.state.isOpen.settings}
         onOpenToggle={this.toggleModal.bind(this, 'settings')}
       />
       <ExportModal
-        mapStyle={this.state.mapStyle}
+        mapStyle={this.state.mapStyle.current}
         onStyleChanged={this.onStyleChanged}
         isOpen={this.state.isOpen.export}
         onOpenToggle={this.toggleModal.bind(this, 'export')}
@@ -598,7 +575,7 @@ export default class App extends React.Component {
         onOpenToggle={this.toggleModal.bind(this, 'open')}
       />
       <SourcesModal
-        mapStyle={this.state.mapStyle}
+        mapStyle={this.state.mapStyle.current}
         onStyleChanged={this.onStyleChanged}
         isOpen={this.state.isOpen.sources}
         onOpenToggle={this.toggleModal.bind(this, 'sources')}

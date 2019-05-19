@@ -9,7 +9,7 @@ import logoImage from 'maputnik-design/logos/logo-color.svg'
 import pkgJson from '../../package.json'
 
 
-class IconText extends React.Component {
+class IconText extends React.PureComponent {
   static propTypes = {
     children: PropTypes.node,
   }
@@ -19,12 +19,11 @@ class IconText extends React.Component {
   }
 }
 
-class ToolbarLink extends React.Component {
+class ToolbarLink extends React.PureComponent {
   static propTypes = {
     className: PropTypes.string,
     children: PropTypes.node,
     href: PropTypes.string,
-    onToggleModal: PropTypes.func,
   }
 
   render() {
@@ -39,12 +38,11 @@ class ToolbarLink extends React.Component {
   }
 }
 
-class ToolbarLinkHighlighted extends React.Component {
+class ToolbarLinkHighlighted extends React.PureComponent {
   static propTypes = {
     className: PropTypes.string,
     children: PropTypes.node,
     href: PropTypes.string,
-    onToggleModal: PropTypes.func
   }
 
   render() {
@@ -61,7 +59,7 @@ class ToolbarLinkHighlighted extends React.Component {
   }
 }
 
-class ToolbarSelect extends React.Component {
+class ToolbarSelect extends React.PureComponent {
   static propTypes = {
     children: PropTypes.node,
     wdKey: PropTypes.string
@@ -77,7 +75,7 @@ class ToolbarSelect extends React.Component {
   }
 }
 
-class ToolbarAction extends React.Component {
+class ToolbarAction extends React.PureComponent {
   static propTypes = {
     children: PropTypes.node,
     onClick: PropTypes.func,
@@ -95,15 +93,11 @@ class ToolbarAction extends React.Component {
   }
 }
 
-export default class Toolbar extends React.Component {
+export default class Toolbar extends React.PureComponent {
   static propTypes = {
     mapStyle: PropTypes.object.isRequired,
     inspectModeEnabled: PropTypes.bool.isRequired,
-    onStyleChanged: PropTypes.func.isRequired,
-    // A new style has been uploaded
-    onStyleOpen: PropTypes.func.isRequired,
     // A dict of source id's and the available source layers
-    sources: PropTypes.object.isRequired,
     children: PropTypes.node,
     onToggleModal: PropTypes.func,
     onSetMapState: PropTypes.func,
